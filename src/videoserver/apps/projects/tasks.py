@@ -1,5 +1,7 @@
 import logging
 from time import time
+from datetime import datetime
+import os
 
 from bson import ObjectId
 from celery.exceptions import MaxRetriesExceededError
@@ -8,6 +10,7 @@ from pymongo import ReturnDocument
 
 from videoserver.celery_app import celery
 from videoserver.lib.video_editor import get_video_editor
+from videoserver.lib.utils import (upload_file_to_s3, create_file_name)
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +38,7 @@ def edit_video(self, project, changes):
             project['storage_id'],
             None
         )
+
         logger.info(f"Replaced file {project['storage_id']} in {app.fs.__class__.__name__} "
                     f"in project {project.get('_id')}")
     except Exception as exc:
@@ -57,6 +61,11 @@ def edit_video(self, project, changes):
         logger.info(f"Removed {len(old_timeline_thumbnails)} old thumbnails from {app.fs.__class__.__name__} "
                     f"in project {project.get('_id')}")
 
+        new_name = create_file_name(ext=project['filename'].rsplit('.')[-1])
+        file_name_s3 = "videos/" + new_name
+        
+        exception_s3 = upload_file_to_s3(project['storage_id'], file_name_s3, project['mime_type'])
+
         # update project record
         app.mongo.db.projects.find_one_and_update(
             {'_id': project['_id']},
@@ -64,6 +73,7 @@ def edit_video(self, project, changes):
                 'processing.video': False,
                 'metadata': metadata,
                 'thumbnails.timeline': [],
+                'urlToVideoS3': os.getenv('AWS_DOMAIN') + file_name_s3,
                 'version': project['version'] + 1
             }},
             return_document=ReturnDocument.BEFORE
@@ -95,6 +105,11 @@ def generate_timeline_thumbnails(self, project, amount):
                 storage_id=project['storage_id'],
                 content_type=meta.get('mimetype')
             )
+
+            new_name = create_file_name(ext=filename.rsplit('.')[-1])
+            file_name_s3 = "timelines/" + new_name
+            upload_file_to_s3(storage_id, file_name_s3, meta.get('mimetype'))
+
             timeline_thumbnails.append(
                 {
                     'filename': filename,
@@ -102,7 +117,8 @@ def generate_timeline_thumbnails(self, project, amount):
                     'mimetype': meta.get('mimetype'),
                     'width': meta.get('width'),
                     'height': meta.get('height'),
-                    'size': meta.get('size')
+                    'size': meta.get('size'),
+                    'urlToImageS3': os.getenv('AWS_DOMAIN') + file_name_s3
                 }
             )
         logger.info(f"Created and saved {len(timeline_thumbnails)} thumbnails to {app.fs.__class__.__name__} "
@@ -175,6 +191,9 @@ def generate_preview_thumbnail(self, project, position, crop, rotate):
         )
         logger.info(f"Created and saved preview thumbnail at position {position} to {app.fs.__class__.__name__} "
                     f"in project {project.get('_id')}.")
+        new_name = create_file_name(ext=filename.rsplit('.')[-1])
+        file_name_s3 = "thumbnails/" + new_name
+
         preview_thumbnail = {
             'filename': filename,
             'storage_id': storage_id,
@@ -182,7 +201,8 @@ def generate_preview_thumbnail(self, project, position, crop, rotate):
             'width': meta.get('width'),
             'height': meta.get('height'),
             'size': meta.get('size'),
-            'position': position
+            'position': position,
+            'urlToImageS3': os.getenv('AWS_DOMAIN') + file_name_s3
         }
     except Exception as e:
         # delete just saved file
@@ -209,6 +229,8 @@ def generate_preview_thumbnail(self, project, position, crop, rotate):
             app.fs.delete(project['thumbnails']['preview'].get('storage_id'))
             logger.info(f"Removed old preview thumbnail at position {project['thumbnails']['preview']['position']} "
                         f"from {app.fs.__class__.__name__} in project {project.get('_id')}")
+
+        exception_s3 = upload_file_to_s3(storage_id, file_name_s3, meta.get('mimetype'))
         # set preview thumbnail in db
         app.mongo.db.projects.update_one(
             {'_id': ObjectId(project.get('_id'))},
