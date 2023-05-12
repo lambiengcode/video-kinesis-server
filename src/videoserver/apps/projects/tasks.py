@@ -1,19 +1,15 @@
 import logging
 from time import time
 from datetime import datetime
-import os
-
 from bson import ObjectId
 from celery.exceptions import MaxRetriesExceededError
 from flask import current_app as app
 from pymongo import ReturnDocument
-
 from videoserver.celery_app import celery
 from videoserver.lib.video_editor import get_video_editor
 from videoserver.lib.utils import (upload_file_to_s3, create_file_name)
 
 logger = logging.getLogger(__name__)
-
 
 @celery.task(bind=True, default_retry_delay=10)
 def edit_video(self, project, changes):
@@ -38,7 +34,6 @@ def edit_video(self, project, changes):
             project['storage_id'],
             None
         )
-
         logger.info(f"Replaced file {project['storage_id']} in {app.fs.__class__.__name__} "
                     f"in project {project.get('_id')}")
     except Exception as exc:
@@ -73,7 +68,7 @@ def edit_video(self, project, changes):
                 'processing.video': False,
                 'metadata': metadata,
                 'thumbnails.timeline': [],
-                'urlToVideoS3': os.getenv('AWS_DOMAIN') + file_name_s3,
+                'href': app.config.get('AWS_DOMAIN') + file_name_s3,
                 'version': project['version'] + 1
             }},
             return_document=ReturnDocument.BEFORE
@@ -118,7 +113,7 @@ def generate_timeline_thumbnails(self, project, amount):
                     'width': meta.get('width'),
                     'height': meta.get('height'),
                     'size': meta.get('size'),
-                    'urlToImageS3': os.getenv('AWS_DOMAIN') + file_name_s3
+                    'href': app.config.get('AWS_DOMAIN') + file_name_s3
                 }
             )
         logger.info(f"Created and saved {len(timeline_thumbnails)} thumbnails to {app.fs.__class__.__name__} "
@@ -202,7 +197,7 @@ def generate_preview_thumbnail(self, project, position, crop, rotate):
             'height': meta.get('height'),
             'size': meta.get('size'),
             'position': position,
-            'urlToImageS3': os.getenv('AWS_DOMAIN') + file_name_s3
+            'href': app.config.get('AWS_DOMAIN') + file_name_s3
         }
     except Exception as e:
         # delete just saved file
